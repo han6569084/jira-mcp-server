@@ -6,6 +6,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Version2Client } from "jira.js";
 import { z } from "zod";
+import dotenv from "dotenv";
+
+// Load environment variables from .env file
+dotenv.config();
 
 // Initialize JIRA client
 const jiraHost = process.env.JIRA_HOST;
