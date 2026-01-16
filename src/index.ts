@@ -37,6 +37,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "jira_search_issues",
+        description: "Search for JIRA issues using JQL",
+        inputSchema: {
+          type: "object",
+          properties: {
+            jql: { type: "string" },
+            maxResults: { type: "number" }
+          },
+          required: ["jql"]
+        }
+      },
+      {
         name: "jira_get_transitions",
         description: "Get available transitions for a JIRA issue",
         inputSchema: {
@@ -86,6 +98,14 @@ async function executeTool(name: string, a: any) {
       }
     });
     return `Success: ${res.key}`;
+  }
+
+  if (name === "jira_search_issues") {
+    const res = await jira.issueSearch.searchForIssuesUsingJql({
+      jql: a.jql,
+      maxResults: a.maxResults || 50
+    });
+    return JSON.stringify(res, null, 2);
   }
 
   if (name === "jira_get_issue") {
