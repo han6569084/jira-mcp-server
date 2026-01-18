@@ -37,6 +37,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         }
       },
       {
+        name: "jira_create_issue",
+        description: "Create a new JIRA issue with optional custom fields",
+        inputSchema: {
+          type: "object",
+          properties: {
+            projectKey: { type: "string" },
+            summary: { type: "string" },
+            description: { type: "string" },
+            issueType: { type: "string", description: "Default is 'Bug' or 'Task'" },
+            assignee: { type: "string" },
+            severity: { type: "string", description: "P0, P1, P2, P3" },
+            repairPlatform: { type: "string", description: "e.g. FW, Android, iOS" },
+            discoveryStage: { type: "string", description: "e.g. 开发, 测试, Code Review" },
+            probability: { type: "string", description: "e.g. 10%, 100%, 必现" },
+            extraFields: { type: "object", description: "Additional raw field ID/value pairs" }
+          },
+          required: ["projectKey", "summary"]
+        }
+      },
+      {
+        name: "jira_update_issue",
+        description: "Update fields of a JIRA issue",
+        inputSchema: {
+          type: "object",
+          properties: {
+            issueKey: { type: "string" },
+            summary: { type: "string" },
+            description: { type: "string" },
+            assignee: { type: "string" },
+            extraFields: { type: "object" }
+          },
+          required: ["issueKey"]
+        }
+      },
+      {
         name: "jira_search_issues",
         description: "Search for JIRA issues using JQL",
         inputSchema: {
@@ -46,29 +81,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             maxResults: { type: "number" }
           },
           required: ["jql"]
-        }
-      },
-      {
-        name: "jira_get_transitions",
-        description: "Get available transitions for a JIRA issue",
-        inputSchema: {
-          type: "object",
-          properties: {
-            issueKey: { type: "string" }
-          },
-          required: ["issueKey"]
-        }
-      },
-      {
-        name: "jira_update_issue_status",
-        description: "Update the status of a JIRA issue (Transition)",
-        inputSchema: {
-          type: "object",
-          properties: {
-            issueKey: { type: "string" },
-            transitionId: { type: "string" }
-          },
-          required: ["issueKey", "transitionId"]
         }
       },
       {
@@ -87,17 +99,59 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+const FIELD_MAP: Record<string, string> = {
+  "severity": "customfield_10401",
+  "repairPlatform": "customfield_10404",
+  "discoveryStage": "customfield_11000",
+  "probability": "customfield_10716"
+};
+
+const VALUE_MAP: Record<string, Record<string, string>> = {
+  "severity": { "P0": "10301", "P1": "10302", "P2": "10303", "P3": "10304" },
+  "repairPlatform": { "FW": "10311", "Android": "10309", "iOS": "10310" },
+  "discoveryStage": { "开发": "11000", "测试": "11001", "Code Review": "11730" },
+  "probability": { "10%": "10625", "100%": "10623", "必现": "10623" }
+};
+
 async function executeTool(name: string, a: any) {
   if (name === "jira_create_issue") {
-    const res = await jira.issues.createIssue({
-      fields: {
-        project: { key: a.projectKey },
-        summary: a.summary,
-        description: a.description,
-        issuetype: { name: a.issueType || "Task" }
+    const fields: any = {
+      project: { key: a.projectKey },
+      summary: a.summary,
+      description: a.description,
+      issuetype: { name: a.issueType || "Bug" }
+    };
+    
+    // Add versions if creating for COLOGNE
+    if (a.projectKey === "COLOGNE") {
+       fields.versions = [{ id: "66200" }];
+    }
+
+    if (a.assignee) fields.assignee = { name: a.assignee };
+    
+    // Map helper fields
+    for (const [key, fieldId] of Object.entries(FIELD_MAP)) {
+      if (a[key]) {
+        const val = VALUE_MAP[key]?.[a[key]] || a[key];
+        fields[fieldId] = { id: val };
       }
-    });
+    }
+
+    if (a.extraFields) Object.assign(fields, a.extraFields);
+
+    const res = await jira.issues.createIssue({ fields });
     return `Success: ${res.key}`;
+  }
+
+  if (name === "jira_update_issue") {
+    const fields: any = {};
+    if (a.summary) fields.summary = a.summary;
+    if (a.description) fields.description = a.description;
+    if (a.assignee) fields.assignee = { name: a.assignee };
+    if (a.extraFields) Object.assign(fields, a.extraFields);
+    
+    await jira.issues.editIssue({ issueIdOrKey: a.issueKey, fields });
+    return `Success: Updated ${a.issueKey}`;
   }
 
   if (name === "jira_search_issues") {
@@ -111,19 +165,6 @@ async function executeTool(name: string, a: any) {
   if (name === "jira_get_issue") {
     const res = await jira.issues.getIssue({ issueIdOrKey: a.issueKey });
     return JSON.stringify(res, null, 2);
-  }
-
-  if (name === "jira_get_transitions") {
-    const res = await jira.issues.getTransitions({ issueIdOrKey: a.issueKey });
-    return JSON.stringify(res, null, 2);
-  }
-
-  if (name === "jira_update_issue_status") {
-    await jira.issues.doTransition({
-      issueIdOrKey: a.issueKey,
-      transition: { id: a.transitionId }
-    });
-    return `Transition successful for ${a.issueKey}`;
   }
 
   if (name === "jira_add_comment") {
@@ -150,30 +191,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function main() {
-  const args = process.argv.slice(2);
-  if (args.length > 0) {
-    const [toolName, ...toolParams] = args;
-    try {
-      let parsedArgs = {};
-      if (toolParams[0]) {
-        try {
-          parsedArgs = JSON.parse(toolParams.join(" "));
-        } catch (e) {
-          toolParams.forEach(arg => {
-            const [k, v] = arg.split("=");
-            if (k && v) (parsedArgs as any)[k] = v;
-          });
-        }
-      }
-      const result = await executeTool(toolName, parsedArgs);
-      console.log(result);
-      process.exit(0);
-    } catch (error: any) {
-      console.error(`CLI Error: ${error.message}`);
-      process.exit(1);
-    }
-  }
-
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
